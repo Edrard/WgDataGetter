@@ -1,0 +1,40 @@
+{
+    "name": "edrard/WgGetter",
+    "description": "Get data from WG Api",
+    "type": "library",
+    "license": "MIT",
+    "authors": [{
+        "name": "Edrard",
+        "email": "demonand@gmail.com"
+    }],
+    "repositories": [
+        {
+            "type": "git",
+            "url": "https://github.com/Edrard/function.git"
+        },
+        {
+            "type": "git",
+            "url": "https://github.com/Edrard/MyLog.git"
+        },
+        {
+            "type": "git",
+            "url": "https://github.com/Edrard/Curl.git"
+        },
+                {
+            "type": "git",
+            "url": "https://github.com/Edrard/WgApi.git"
+        }
+    ],
+    "require": {
+        "php": ">=5.4.0",
+        "edrard/function": "dev-master",
+        "edrard/MyLog": "dev-master",
+        "edrard/Curl": "dev-master",
+        "edrard/WgApi": "dev-master"
+    },
+    "autoload": {
+        "psr-4": {
+            "edrard\\WgGetter\\": "src/WgGetter"
+        }
+    }
+}
