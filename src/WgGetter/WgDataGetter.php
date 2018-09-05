@@ -13,7 +13,7 @@ class WgDataGetter
     function __construct(Curl $curl,$multi = 10)
     {  
         MyLog::init('logs','wgdata_g');
-        MyLog::changeType(array('warning','error','critical'));
+        MyLog::changeType(array('warning','error','critical'),'wgdata_g');
         $this->curl = $curl;
     }
     public function setMultiVar($multi){
