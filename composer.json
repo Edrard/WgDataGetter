@@ -3,6 +3,7 @@
     "description": "Get data from WG Api",
     "type": "library",
     "license": "MIT",
+    "homepage": "https://github.com/Edrard/WgDataGetter",
     "authors": [{
         "name": "Edrard",
         "email": "demonand@gmail.com"
