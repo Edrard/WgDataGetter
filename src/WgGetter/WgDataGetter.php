@@ -34,7 +34,9 @@ class WgDataGetter
             $start = microtime(true);
             $request = $this->getUrls($urls);
             if(!empty($end) && (microtime(true) - $start) < 1){
-                usleep(1100000 - (microtime(true) - $start)*1000000);
+                $sleep = max(0,1100000 - (microtime(true) - $start)*1000000);
+                MyLog::error("Need to sleep ".($sleep),array(),'wgdata_g');
+                usleep($sleep);
             }
             $request = $function !== NULL ? $function($request,$urls) : $request;
             if($instead === FALSE){
