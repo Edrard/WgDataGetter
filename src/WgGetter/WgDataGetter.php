@@ -16,6 +16,10 @@ class WgDataGetter
         MyLog::changeType(array('warning','error','critical'),'wgdata_g');
         $this->curl = $curl;
     }
+    public function debugLog(){       
+        MyLog::changeType(array('debug','info','warning','error','critical'),'wgdata_g');
+        MyLog::info("Debug Log on",array(),'wgdata_g'); 
+    }
     public function setMultiVar($multi){
         $this->multi = (int) $multi;
     }
@@ -38,6 +42,7 @@ class WgDataGetter
                 MyLog::error("Need to sleep ".($sleep),array(),'wgdata_g');
                 usleep($sleep);
             }
+            MyLog::debug("Run Time ".(microtime(true) - $start).' Executed URLS - '.count($this->curl->getSessions()),array(),'wgdata_g');
             $request = $function !== NULL ? $function($request,$urls) : $request;
             if($instead === FALSE){
                 $request = $this->check($request,$urls);
