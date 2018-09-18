@@ -31,7 +31,11 @@ class WgDataGetter
     public function getData( Closure $function = NULL, $instead = FALSE ){
         $end = array();
         foreach(array_chunk($this->urls,$this->multi,TRUE) as $urls){
+            $start = microtime(true);
             $request = $this->getUrls($urls);
+            if(!empty($end) && (microtime(true) - $start) < 1){
+                usleep(1100000 - (microtime(true) - $start)*1000000);
+            }
             $request = $function !== NULL ? $function($request,$urls) : $request;
             if($instead === FALSE){
                 $request = $this->check($request,$urls);
@@ -62,7 +66,7 @@ class WgDataGetter
             do{
                 $tmp = json_decode($result[$key],true); 
                 if(!isset($tmp['status']) || (isset($tmp['status']) && $tmp['status'] != 'ok')){
-                    MyLog::error("Wrong Status Code in JSON for URL - ".$url,array(),'wgdata_g');
+                    MyLog::error("Wrong Status Code in JSON for URL - ".$url,array($tmp['error']['message']),'wgdata_g');
                     sleep($this->sleep);
                     $result[$key] = $this->getUrls(array($key => $url))[$key];    
                 }
