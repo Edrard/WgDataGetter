@@ -39,7 +39,7 @@ class WgDataGetter
             $request = $this->getUrls($urls);
             if(!empty($end) && (microtime(true) - $start) < 1){
                 $sleep = max(0,1100000 - (microtime(true) - $start)*1000000);
-                MyLog::error("Need to sleep ".($sleep),array(),'wgdata_g');
+                MyLog::error("Need to sleep ".($sleep/1000000).' sec',array(),'wgdata_g');
                 usleep($sleep);
             }
             MyLog::debug("Run Time ".(microtime(true) - $start),array(count($this->curl->getSessions())),'wgdata_g');
