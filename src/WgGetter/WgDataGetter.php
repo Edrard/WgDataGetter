@@ -1,85 +1,202 @@
 <?php
+
+declare(strict_types=1);
+
 namespace edrard\WgGetter;
 
-use edrard\Log\MyLog;
-use edrard\Curl\Curl;
+use Closure;
+use edrard\WgGetter\Contracts\BatchTransportInterface;
+use edrard\WgGetter\Contracts\DataGetterInterface;
+use edrard\WgGetter\Contracts\RateLimiterInterface;
+use edrard\WgGetter\Exceptions\RequestException;
+use edrard\WgGetter\Http\GuzzleTransport;
+use InvalidArgumentException;
+use LogicException;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 
-class WgDataGetter
-{ 
-    protected $curl = FALSE;
-    protected $multi = 10;
-    protected $urls = array();
-    protected $sleep = 5;
-    function __construct(Curl $curl,$multi = 10)
-    {  
-        MyLog::init('logs','wgdata_g');
-        MyLog::changeType(array('warning','error','critical'),'wgdata_g');
-        $this->curl = $curl;
+class WgDataGetter implements DataGetterInterface
+{
+    /** @var array<int|string, string> */
+    private array $urls = [];
+    private int $multi;
+    private BatchTransportInterface $transport;
+    private RetryPolicy $retry;
+    private RateLimiterInterface $limiter;
+    private ResponseDecoder $decoder;
+    private LoggerInterface $logger;
+    private Closure $sleep;
+    private bool $running = false;
+
+    public function __construct(?BatchTransportInterface $transport = null, int $multi = 10, ?RetryPolicy $retry = null, ?RateLimiterInterface $limiter = null, ?LoggerInterface $logger = null, ?callable $sleep = null)
+    {
+        $this->setMultiVar($multi);
+        $this->transport = $transport ?? new GuzzleTransport();
+        $this->retry = $retry ?? new RetryPolicy();
+        $this->limiter = $limiter ?? new IntervalRateLimiter();
+        $this->decoder = new ResponseDecoder();
+        $this->logger = $logger ?? new NullLogger();
+        $this->sleep = $sleep === null ? static function (float $seconds): void {
+            usleep((int) ceil($seconds * 1e6));
+        } : Closure::fromCallable($sleep);
     }
-    public function debugLog(){       
-        MyLog::changeType(array('debug','info','warning','error','critical'),'wgdata_g');
-        MyLog::info("Debug Log on",array(),'wgdata_g'); 
+
+    /** @deprecated Configure log levels on the injected PSR-3 logger. */
+    public function debugLog(): void
+    {
     }
-    public function setMultiVar($multi){
-        $this->multi = (int) $multi;
+    public function setMultiVar(int $multi): void
+    {
+        if ($multi < 1 || $multi > 10) {
+            throw new InvalidArgumentException('Batch concurrency must be between 1 and 10. Coordinate higher quotas in the application.');
+        }
+        $this->multi = $multi;
     }
-    public function getMultiVar(){
+    public function getMultiVar(): int
+    {
         return $this->multi;
     }
-    public function setUrls($array){
-        $this->urls = array_special_merge_samere($this->urls,$array);
-    }
-    public function cleanUrls(){
-        $this->urls = array();
-    }
-    public function getData( Closure $function = NULL, $instead = FALSE ){
-        $end = array();
-        foreach(array_chunk($this->urls,$this->multi,TRUE) as $urls){
-            $start = microtime(true);
-            $request = $this->getUrls($urls);
-            if(!empty($end) && (microtime(true) - $start) < 1){
-                $sleep = max(0,1100000 - (microtime(true) - $start)*1000000);
-                MyLog::error("Need to sleep ".($sleep/1000000).' sec',array(),'wgdata_g');
-                usleep($sleep);
-            }
-            MyLog::debug("Run Time ".(microtime(true) - $start),array(count($this->curl->getSessions())),'wgdata_g');
-            $request = $function !== NULL ? $function($request,$urls) : $request;
-            if($instead === FALSE){
-                $request = $this->check($request,$urls);
-            }  
-            $end = array_special_merge($end,$request);  
-        }
-        $this->cleanUrls();
-        return $end;
-    }
-    private function getUrls($urls){
-        $this->curl->setCurlRetry(TRUE);
-        $this->curl->setSleep(function($retry,$url){
-            $sleep = max(1,101-$retry);
-            MyLog::error("Retry count:".($sleep).' Url - '.$url,array(),'wgdata_g');
-            return $sleep;
-        });
-        foreach($urls as $key => $link){
-            $this->curl->addSession( $link, $key );
-        }
-        $ret = $this->curl->exec();
-        $this->curl->close();
-        return $ret;
-    }
-    private function check($result,$url_info)
+
+    /**
+     * String keys are stable identifiers; numeric keys are appended without overwriting earlier URLs.
+     * @param array<array-key, mixed> $urls
+     */
+    public function setUrls(array $urls): void
     {
-        $data = array();
-        foreach($url_info as $key => $url){
-            do{
-                $tmp = json_decode($result[$key],true); 
-                if(!isset($tmp['status']) || (isset($tmp['status']) && $tmp['status'] != 'ok')){
-                    MyLog::error("Wrong Status Code in JSON for URL - ".$url,array($tmp['error']['message']),'wgdata_g');
-                    sleep($this->sleep);
-                    $result[$key] = $this->getUrls(array($key => $url))[$key];    
-                }
-            }while($tmp['status'] !='ok'); 
-            $data[$key] = $tmp['data'];
+        if ($this->running) {
+            throw new LogicException('Cannot change the queue while fetching.');
         }
-        return $data;
+        $next = $this->urls;
+        foreach ($urls as $key => $url) {
+            $parts = is_string($url) ? parse_url($url) : false;
+            if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['http', 'https'], true) || empty($parts['host'])
+                || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])) {
+                throw new InvalidArgumentException('Request URLs must be HTTP(S) URLs without credentials or fragments.');
+            }
+            if ($parts['scheme'] !== 'https' && !in_array($parts['host'], ['127.0.0.1', 'localhost', '[::1]'], true)) {
+                throw new InvalidArgumentException('Remote requests require HTTPS.');
+            }
+            if (is_int($key)) {
+                $next[] = $url;
+            } elseif (array_key_exists($key, $next) && $next[$key] !== $url) {
+                throw new InvalidArgumentException('Duplicate request key with a different URL.');
+            } else {
+                $next[$key] = $url;
+            }
+        }
+        $this->urls = $next;
+    }
+    public function cleanUrls(): void
+    {
+        $this->urls = [];
+    }
+
+    /**
+     * Normal mode returns keyed WG data. The callback receives raw bodies and URLs
+     * once per successful batch. With $instead=true, it supplies the output itself.
+     * Failures throw; the queue is always consumed and cleared.
+     * @return array<array-key, mixed>
+     */
+    public function getData(?callable $function = null, bool $instead = false): array
+    {
+        return $this->execute($function, $instead, false);
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    public function getEnvelopes(): array
+    {
+        return $this->execute(null, false, true);
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private function execute(?callable $function, bool $instead, bool $envelopes): array
+    {
+        if ($this->running) {
+            throw new LogicException('Recursive fetching is not supported.');
+        }
+        $this->running = true;
+        try {
+            $end = [];
+            foreach (array_chunk($this->urls, $this->multi, true) as $urls) {
+                [$raw, $data] = $this->fetchBatch($urls, !$instead);
+                $processed = $function === null ? $raw : $function($raw, $urls);
+                if (!is_array($processed)) {
+                    throw new InvalidArgumentException('Response callback must return an array.');
+                }
+                if (!$instead && $function !== null) {
+                    $data = [];
+                    foreach ($urls as $key => $_) {
+                        if (!isset($processed[$key]) || !is_string($processed[$key])) {
+                            throw new InvalidArgumentException('Normal-mode callbacks must preserve keys and return JSON strings.');
+                        }
+                        $data[$key] = $this->decoder->envelope($processed[$key], $key);
+                    }
+                }
+                if (!$instead && !$envelopes) {
+                    foreach ($data as &$envelope) {
+                        $envelope = $envelope['data'];
+                    }
+                    unset($envelope);
+                }
+                if ($instead && array_intersect_key($end, $processed) !== []) {
+                    throw new InvalidArgumentException('Callback result keys must be unique across batches.');
+                }
+                $end = array_replace($end, $instead ? $processed : $data);
+            }
+            return $end;
+        } finally {
+            $this->cleanUrls();
+            $this->running = false;
+        }
+    }
+
+    /**
+     * @return array{array<array-key, mixed>, array<array-key, mixed>}
+     * @param array<int|string, string> $urls
+     */
+    private function fetchBatch(array $urls, bool $validateEnvelope): array
+    {
+        $pending = $urls;
+        $raw = $data = [];
+        for ($attempt = 1; $pending !== []; ++$attempt) {
+            $this->limiter->acquire(count($pending));
+            $responses = $this->transport->send($pending, $this->multi);
+            $retryUrls = [];
+            $delay = 0.0;
+            foreach ($pending as $key => $url) {
+                try {
+                    $response = $responses[$key] ?? throw new RequestException($key, true);
+                    if ($response->transportFailure || $response->status < 200 || $response->status >= 300) {
+                        throw new RequestException($key, $response->transportFailure || in_array($response->status, [429, 500, 502, 503, 504], true), $response->retryAfter, $response->status);
+                    }
+                    $value = $validateEnvelope ? $this->decoder->envelope($response->body, $key) : null;
+                    $raw[$key] = $response->body;
+                    $data[$key] = $value;
+                } catch (RequestException $error) {
+                    if (!$error->retryable || $attempt >= $this->retry->maxAttempts || ($error->retryAfter !== null && $error->retryAfter > $this->retry->maxDelay)) {
+                        $this->logger->error('API request failed.', ['code' => $error->getCode(), 'attempt' => $attempt]);
+                        throw $error;
+                    }
+                    $retryUrls[$key] = $url;
+                    $delay = max($delay, $this->retry->delay($attempt, $error->retryAfter));
+                }
+            }
+            if ($retryUrls !== []) {
+                $this->logger->warning('Retrying transient API failures.', ['count' => count($retryUrls), 'attempt' => $attempt, 'delay' => $delay]);
+                ($this->sleep)($delay);
+            }
+            $pending = $retryUrls;
+        }
+        // Restore input order even when a later retry finished after other keys.
+        $orderedRaw = $orderedData = [];
+        foreach ($urls as $key => $_) {
+            $orderedRaw[$key] = $raw[$key];
+            $orderedData[$key] = $data[$key];
+        }
+        return [$orderedRaw, $orderedData];
     }
 }
