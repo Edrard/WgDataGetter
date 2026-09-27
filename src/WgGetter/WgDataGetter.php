@@ -6,7 +6,7 @@ namespace edrard\WgGetter;
 
 use Closure;
 use edrard\WgGetter\Contracts\BatchTransportInterface;
-use edrard\WgGetter\Contracts\SettledDataGetterInterface;
+use edrard\WgGetter\Contracts\SingleAttemptDataGetterInterface;
 use edrard\WgGetter\Exceptions\InvalidResponseException;
 use edrard\WgGetter\Contracts\RateLimiterInterface;
 use edrard\WgGetter\Exceptions\RequestException;
@@ -17,7 +17,7 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use SensitiveParameter;
 
-class WgDataGetter implements SettledDataGetterInterface
+class WgDataGetter implements SingleAttemptDataGetterInterface
 {
     /** @var array<int|string, string> */
     private array $urls = [];
@@ -125,6 +125,18 @@ class WgDataGetter implements SettledDataGetterInterface
     /** @return array<int|string, RequestOutcome> */
     public function getEnvelopeOutcomes(?int $concurrency = null): array
     {
+        return $this->settled($concurrency, $this->retry->maxAttempts);
+    }
+
+    /** @return array<int|string, RequestOutcome> */
+    public function getEnvelopeOutcomesOnce(?int $concurrency = null): array
+    {
+        return $this->settled($concurrency, 1);
+    }
+
+    /** @return array<int|string, RequestOutcome> */
+    private function settled(?int $concurrency, int $maxAttempts): array
+    {
         if ($this->running) {
             throw new LogicException('Recursive fetching is not supported.');
         }
@@ -136,7 +148,7 @@ class WgDataGetter implements SettledDataGetterInterface
         try {
             $outcomes = [];
             foreach (array_chunk($this->urls, $this->multi, true) as $urls) {
-                [, , $batch] = $this->fetchBatch($urls, true, true);
+                [, , $batch] = $this->fetchBatch($urls, true, true, $maxAttempts);
                 $outcomes += $batch;
             }
             return $outcomes;
@@ -195,7 +207,7 @@ class WgDataGetter implements SettledDataGetterInterface
      * @return array{array<array-key, mixed>, array<array-key, mixed>, array<int|string, RequestOutcome>}
      * @param array<int|string, string> $urls
      */
-    private function fetchBatch(#[SensitiveParameter] array $urls, bool $validateEnvelope, bool $settled = false): array
+    private function fetchBatch(#[SensitiveParameter] array $urls, bool $validateEnvelope, bool $settled = false, ?int $maxAttempts = null): array
     {
         $pending = $urls;
         $raw = $data = $outcomes = [];
@@ -222,7 +234,7 @@ class WgDataGetter implements SettledDataGetterInterface
                     }
                     $outcomes[$key] = new RequestOutcome(null, new RequestFailure('invalid_response'), $attempt);
                 } catch (RequestException $error) {
-                    if (!$error->retryable || $attempt >= $this->retry->maxAttempts || ($error->retryAfter !== null && $error->retryAfter > $this->retry->maxDelay)) {
+                    if (!$error->retryable || $attempt >= ($maxAttempts ?? $this->retry->maxAttempts) || ($error->retryAfter !== null && $error->retryAfter > $this->retry->maxDelay)) {
                         $this->logger->error('API request failed.', ['code' => $error->getCode(), 'attempt' => $attempt]);
                         if (!$settled) {
                             throw $error;

@@ -13,6 +13,31 @@ use PHPUnit\Framework\TestCase;
 
 final class SettledMultigetTest extends TestCase
 {
+    public function testSingleAttemptReportsAllFailuresWithoutRetryOrCooldownAndRestoresQueue(): void
+    {
+        $transport = new ScriptedTransport([
+            ['rate' => new HttpResult(429, retryAfter: 60), 'timeout' => new HttpResult(504), 'ok' => new HttpResult(200, '{"status":"ok","data":{"1":null}}')],
+            ['later' => new HttpResult(200, '{"status":"ok","data":null}')],
+        ]);
+        $sleeps = [];
+        $getter = new WgDataGetter($transport, retry: new RetryPolicy(3), limiter: new RecordingLimiter(), sleep: static function (float $seconds) use (&$sleeps): void {
+            $sleeps[] = $seconds;
+        });
+        $getter->setUrls(array_fill_keys(['rate', 'timeout', 'ok'], 'https://example.test/'));
+        $outcomes = $getter->getEnvelopeOutcomesOnce(3);
+        self::assertSame(429, $outcomes['rate']->failure->code);
+        self::assertSame(60.0, $outcomes['rate']->failure->retryAfter);
+        self::assertSame(504, $outcomes['timeout']->failure->code);
+        self::assertTrue($outcomes['ok']->succeeded());
+        self::assertSame(1, $outcomes['rate']->attempts);
+        self::assertCount(1, $transport->calls);
+        self::assertSame([], $sleeps);
+        self::assertSame(10, $getter->getMultiVar());
+        self::assertSame([], $getter->getEnvelopeOutcomesOnce());
+        $getter->setUrls(['later' => 'https://example.test/']);
+        self::assertTrue($getter->getEnvelopeOutcomes()['later']->succeeded());
+    }
+
     public function testFailuresRetainSuccessesRetryOnlyPendingKeysAndConsumeQueue(): void
     {
         $ok = new HttpResult(200, '{"status":"ok","data":{"1":null}}');

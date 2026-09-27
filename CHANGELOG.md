@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.0 - 2026-09-28
+
+- Add SingleAttemptDataGetterInterface/getEnvelopeOutcomesOnce for caller-owned recovery, with one attempt per queued URL and no retry cooldown.
+- Preserve existing retry-enabled methods and retain every keyed outcome, status and Retry-After.
+- Verify queue cleanup, concurrency restoration and no hidden retries with the default retry policy.
+
 ## 2.1.0 — 2026-09-27
 
 - Add SettledDataGetterInterface and per-request RequestOutcome/RequestFailure objects for multiget with independent successes and failures.

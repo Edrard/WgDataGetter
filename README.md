@@ -17,7 +17,7 @@ foreach ($outcomes as $name => $outcome) {
 
 SettledDataGetterInterface adds independent outcomes without changing DataGetterInterface or legacy fail-fast methods. HTTP/provider errors and invalid envelopes become per-request failures; successes remain available. Only transient failed requests are retried under RetryPolicy. Caller keys/order are retained and the queue is consumed. The optional concurrency override (1–10) is restored afterwards. Infrastructure exceptions may still propagate. Failure objects contain safe categories/codes instead of URLs, bodies or provider messages; debug output redacts envelopes.
 
-The existing Guzzle Pool bounds actual concurrent HTTP requests and reads complete bodies without a package-defined size cap. WotClient uses this interface for typed operations and endpoint-limit chunks. WgDataGetter owns HTTP concurrency and retries.
+The existing Guzzle Pool bounds actual concurrent HTTP requests and reads complete bodies without a package-defined size cap. WgDataGetter owns HTTP concurrency. Its existing settled methods can apply bounded retries; WotClient 1.2+ uses the single-attempt capability below so WgBatch controls recovery.
 
 Concurrent GET fetcher with WG response validation and bounded retries. Requires PHP 8.5, ext-curl and Composer 2.
 
@@ -165,3 +165,12 @@ This package performs GET only. Generic public WG methods can be supplied as URL
 setUrls() accepts authenticated HTTPS GET requests, including encoded access_token parameter names. Token-bearing requests require HTTPS even for loopback URLs. Supply application-owned URLs; HTTPS validation is not a destination/IP allowlist for arbitrary user input. Injected Guzzle query defaults cannot replace the explicit request URL query, and transport debug output is disabled. Redact token-bearing URLs in application/proxy logs.
 
 The transport reads the complete response body without a package-defined byte limit or truncation. This also applies to gzip-decoded responses and responses without Content-Length. The directly used guzzlehttp/psr7 dependency (MIT) provides the stream-reading utilities.
+
+## Caller-owned recovery (SDK 2.2.0)
+
+```php
+$getter->setUrls($urls);
+$outcomes = $getter->getEnvelopeOutcomesOnce(concurrency: 10);
+```
+
+SingleAttemptDataGetterInterface executes each URL once, including 429 and 504. It reports every failure and Retry-After without sleeping or retrying. Transport concurrency and the configured request-rate limiter still apply. WotClient multiget uses this capability; WgBatch owns recovery, K and the caller-configured pause T. Existing getEnvelopeOutcomes/getData/getEnvelopes retain their RetryPolicy.
