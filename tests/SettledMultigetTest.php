@@ -13,6 +13,27 @@ use PHPUnit\Framework\TestCase;
 
 final class SettledMultigetTest extends TestCase
 {
+    public function testDocumentedProviderIdentifierSurvivesWithoutRawErrorValue(): void
+    {
+        $transport = new ScriptedTransport([[
+            'blocked' => new HttpResult(200, '{"status":"error","error":{"code":407,"message":"INVALID_IP_ADDRESS","field":"application_id","value":"secret-token"}}'),
+            'unknown' => new HttpResult(200, '{"status":"error","error":{"code":407,"message":"secret-token"}}'),
+            'missing' => new HttpResult(200, '{"status":"ok","meta":{"count":1},"data":{"6566456":null}}'),
+            'no-data' => new HttpResult(200, '{"status":"ok"}'),
+        ]]);
+        $getter = new WgDataGetter($transport, limiter: new RecordingLimiter());
+        $getter->setUrls(array_fill_keys(['blocked', 'unknown', 'missing', 'no-data'], 'https://example.test/'));
+
+        $outcomes = $getter->getEnvelopeOutcomesOnce(4);
+
+        self::assertSame('INVALID_IP_ADDRESS', $outcomes['blocked']->failure->providerMessage);
+        self::assertNull($outcomes['unknown']->failure->providerMessage);
+        self::assertTrue($outcomes['missing']->succeeded());
+        self::assertSame(['6566456' => null], $outcomes['missing']->envelope()['data']);
+        self::assertTrue($outcomes['no-data']->succeeded());
+        self::assertStringNotContainsString('secret-token', var_export($outcomes['blocked']->failure, true));
+    }
+
     public function testSingleAttemptReportsAllFailuresWithoutRetryOrCooldownAndRestoresQueue(): void
     {
         $transport = new ScriptedTransport([

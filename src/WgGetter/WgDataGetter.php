@@ -187,7 +187,7 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
                 }
                 if (!$instead && !$envelopes) {
                     foreach ($data as &$envelope) {
-                        $envelope = $envelope['data'];
+                        $envelope = $envelope['data'] ?? null;
                     }
                     unset($envelope);
                 }
@@ -239,7 +239,7 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
                         if (!$settled) {
                             throw $error;
                         }
-                        $outcomes[$key] = new RequestOutcome(null, new RequestFailure('request_failed', $error->getCode(), $error->retryable, $error->retryAfter), $attempt);
+                        $outcomes[$key] = new RequestOutcome(null, new RequestFailure('request_failed', $error->getCode(), $error->retryable, $error->retryAfter, $error->providerMessage), $attempt);
                         continue;
                     }
                     $retryUrls[$key] = $url;

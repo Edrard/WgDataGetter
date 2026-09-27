@@ -58,8 +58,15 @@ final class WgDataGetterTest extends TestCase
             [new HttpResult(302), RequestException::class],
             [new HttpResult(200, '{invalid'), InvalidResponseException::class],
             [new HttpResult(200, 'null'), InvalidResponseException::class],
-            [new HttpResult(200, '{"status":"ok"}'), InvalidResponseException::class],
         ];
+    }
+
+    public function testSuccessfulEnvelopeWithoutDataIsReturnedAsNull(): void
+    {
+        $getter = $this->getter(new ScriptedTransport([['a' => new HttpResult(200, '{"status":"ok"}')]]));
+        $getter->setUrls(['a' => 'https://api.example/a']);
+
+        self::assertSame(['a' => null], $getter->getData());
     }
     #[DataProvider('permanentFailures')]
     public function testPermanentErrorsAreNotRetried(HttpResult $failure, string $exception): void

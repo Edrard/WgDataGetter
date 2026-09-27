@@ -9,13 +9,13 @@ foreach ($outcomes as $name => $outcome) {
     if ($outcome->succeeded()) {
         $envelope = $outcome->envelope();
     } else {
-        $failure = $outcome->failure; // kind, code, retryable, retryAfter
+        $failure = $outcome->failure; // kind, code, retryable, retryAfter, providerMessage
         $attempts = $outcome->attempts;
     }
 }
 ```
 
-SettledDataGetterInterface adds independent outcomes without changing DataGetterInterface or legacy fail-fast methods. HTTP/provider errors and invalid envelopes become per-request failures; successes remain available. Only transient failed requests are retried under RetryPolicy. Caller keys/order are retained and the queue is consumed. The optional concurrency override (1–10) is restored afterwards. Infrastructure exceptions may still propagate. Failure objects contain safe categories/codes instead of URLs, bodies or provider messages; debug output redacts envelopes.
+SettledDataGetterInterface adds independent outcomes without changing DataGetterInterface or legacy fail-fast methods. HTTP/provider errors and invalid envelopes become per-request failures; successes remain available. Only transient failed requests are retried under RetryPolicy. Caller keys/order are retained and the queue is consumed. The optional concurrency override (1–10) is restored afterwards. Infrastructure exceptions may still propagate. Failure objects contain safe categories/codes and allowlisted WG error identifiers (`INVALID_IP_ADDRESS`, `INVALID_APPLICATION_ID`, `APPLICATION_IS_BLOCKED`, `REQUEST_LIMIT_EXCEEDED`, `SOURCE_NOT_AVAILABLE`), never URLs, bodies, error values or arbitrary provider text; debug output redacts envelopes. An envelope with `status: "ok"` succeeds even when `data` is absent, null or unusual.
 
 The existing Guzzle Pool bounds actual concurrent HTTP requests and reads complete bodies without a package-defined size cap. WgDataGetter owns HTTP concurrency. Its existing settled methods can apply bounded retries; WotClient 1.2+ uses the single-attempt capability below so WgBatch controls recovery.
 

@@ -13,7 +13,7 @@ final class ResponseDecoder
 {
     public function decode(#[SensitiveParameter] string $body, int|string $key): mixed
     {
-        return $this->envelope($body, $key)['data'];
+        return $this->envelope($body, $key)['data'] ?? null;
     }
     /**
      * @return array<array-key, mixed>
@@ -34,11 +34,11 @@ final class ResponseDecoder
                 throw new InvalidResponseException($key);
             }
             $code = is_numeric($error['code'] ?? null) ? (int) $error['code'] : 0;
-            $message = $error['message'] ?? '';
+            $message = $error['message'] ?? null;
             $retryable = in_array($message, ['REQUEST_LIMIT_EXCEEDED', 'SOURCE_NOT_AVAILABLE'], true);
-            throw new RequestException($key, $retryable, code: $code);
+            throw new RequestException($key, $retryable, code: $code, providerMessage: $message);
         }
-        if (($response['status'] ?? null) !== 'ok' || !array_key_exists('data', $response)) {
+        if (($response['status'] ?? null) !== 'ok') {
             throw new InvalidResponseException($key);
         }
         return $response;
