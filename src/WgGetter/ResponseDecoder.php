@@ -7,17 +7,18 @@ namespace edrard\WgGetter;
 use edrard\WgGetter\Exceptions\InvalidResponseException;
 use edrard\WgGetter\Exceptions\RequestException;
 use JsonException;
+use SensitiveParameter;
 
 final class ResponseDecoder
 {
-    public function decode(string $body, int|string $key): mixed
+    public function decode(#[SensitiveParameter] string $body, int|string $key): mixed
     {
         return $this->envelope($body, $key)['data'];
     }
     /**
      * @return array<array-key, mixed>
      */
-    public function envelope(string $body, int|string $key): array
+    public function envelope(#[SensitiveParameter] string $body, int|string $key): array
     {
         try {
             $response = json_decode($body, true, 512, JSON_THROW_ON_ERROR);

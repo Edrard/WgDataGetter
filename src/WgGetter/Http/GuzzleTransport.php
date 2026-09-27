@@ -8,8 +8,11 @@ use edrard\WgGetter\Contracts\BatchTransportInterface;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Pool;
+use GuzzleHttp\Psr7\Utils;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
+use SensitiveParameter;
+use Throwable;
 
 final class GuzzleTransport implements BatchTransportInterface
 {
@@ -25,7 +28,7 @@ final class GuzzleTransport implements BatchTransportInterface
      * @param array<int|string, string> $urls
      * @return array<int|string, HttpResult>
      */
-    public function send(array $urls, int $concurrency): array
+    public function send(#[SensitiveParameter] array $urls, int $concurrency): array
     {
         if ($concurrency < 1) {
             throw new InvalidArgumentException('Concurrency must be positive.');
@@ -34,6 +37,8 @@ final class GuzzleTransport implements BatchTransportInterface
         $requests = function () use ($urls): \Generator {
             foreach ($urls as $key => $url) {
                 yield $key => fn () => $this->client->requestAsync('GET', $url, [
+                    'debug' => false,
+                    'query' => parse_url($url, PHP_URL_QUERY) ?? '',
                     'timeout' => $this->timeout,
                     'connect_timeout' => $this->connectTimeout,
                     'http_errors' => false,
@@ -46,12 +51,22 @@ final class GuzzleTransport implements BatchTransportInterface
         $pool = new Pool($this->client, $requests(), [
             'concurrency' => $concurrency,
             'fulfilled' => function (ResponseInterface $response, int|string $key) use (&$results): void {
+                try {
+                    $stream = $response->getBody();
+                    if ($stream->isSeekable()) {
+                        $stream->rewind();
+                    }
+                    $body = Utils::copyToString($stream);
+                } catch (Throwable) {
+                    $results[$key] = new HttpResult(0, transportFailure: true);
+                    return;
+                }
                 $header = $response->getHeaderLine('Retry-After');
                 $retryAfter = null;
                 if ($header !== '') {
                     $retryAfter = ctype_digit($header) ? (float) $header : max(0.0, (float) (strtotime($header) ?: time()) - time());
                 }
-                $results[$key] = new HttpResult($response->getStatusCode(), (string) $response->getBody(), $retryAfter);
+                $results[$key] = new HttpResult($response->getStatusCode(), $body, $retryAfter);
             },
             // Never retain the underlying exception: its message/request may contain credentials.
             'rejected' => function (mixed $reason, int|string $key) use (&$results): void {

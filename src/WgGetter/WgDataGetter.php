@@ -14,6 +14,7 @@ use InvalidArgumentException;
 use LogicException;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use SensitiveParameter;
 
 class WgDataGetter implements DataGetterInterface
 {
@@ -61,7 +62,7 @@ class WgDataGetter implements DataGetterInterface
      * String keys are stable identifiers; numeric keys are appended without overwriting earlier URLs.
      * @param array<array-key, mixed> $urls
      */
-    public function setUrls(array $urls): void
+    public function setUrls(#[SensitiveParameter] array $urls): void
     {
         if ($this->running) {
             throw new LogicException('Cannot change the queue while fetching.');
@@ -70,11 +71,21 @@ class WgDataGetter implements DataGetterInterface
         foreach ($urls as $key => $url) {
             $parts = is_string($url) ? parse_url($url) : false;
             if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['http', 'https'], true) || empty($parts['host'])
-                || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])) {
+                || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])
+                || preg_match('/[\x00-\x20\x7f\\\\]/', $url)) {
                 throw new InvalidArgumentException('Request URLs must be HTTP(S) URLs without credentials or fragments.');
             }
             if ($parts['scheme'] !== 'https' && !in_array($parts['host'], ['127.0.0.1', 'localhost', '[::1]'], true)) {
                 throw new InvalidArgumentException('Remote requests require HTTPS.');
+            }
+            foreach (preg_split('/[&;]/', $parts['query'] ?? '') as $pair) {
+                $name = urldecode(explode('=', $pair, 2)[0]);
+                if (preg_match('/[\x00-\x1f\x7f]/', $name)) {
+                    throw new InvalidArgumentException('Query parameter names must not contain control characters.');
+                }
+                if ($parts['scheme'] !== 'https' && preg_match('/^access[_. ]token(?:$|\[)/i', ltrim($name))) {
+                    throw new InvalidArgumentException('Access token requests require HTTPS.');
+                }
             }
             if (is_int($key)) {
                 $next[] = $url;
@@ -158,7 +169,7 @@ class WgDataGetter implements DataGetterInterface
      * @return array{array<array-key, mixed>, array<array-key, mixed>}
      * @param array<int|string, string> $urls
      */
-    private function fetchBatch(array $urls, bool $validateEnvelope): array
+    private function fetchBatch(#[SensitiveParameter] array $urls, bool $validateEnvelope): array
     {
         $pending = $urls;
         $raw = $data = [];

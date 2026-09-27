@@ -41,6 +41,18 @@ final class LocalHttpTest extends TestCase
             self::assertTrue(json_decode($results['ok']->body, true, flags: JSON_THROW_ON_ERROR)['data']['fixture']);
             self::assertSame(429, $results['limited']->status);
             self::assertSame(2.0, $results['limited']->retryAfter);
+            foreach ([new \GuzzleHttp\Handler\CurlMultiHandler(), new \GuzzleHttp\Handler\StreamHandler()] as $handler) {
+                $http = new \GuzzleHttp\Client(['handler' => \GuzzleHttp\HandlerStack::create($handler)]);
+                $largeResponses = (new GuzzleTransport($http))->send([
+                    'large' => 'http://'.$address.'/large',
+                    'compressed' => 'http://'.$address.'/compressed',
+                ], 2);
+                foreach ($largeResponses as $result) {
+                    self::assertSame(200, $result->status);
+                    self::assertFalse($result->transportFailure);
+                    self::assertSame(str_repeat('x', 9 * 1024 * 1024), $result->body);
+                }
+            }
         } finally {
             proc_terminate($process);
             proc_close($process);

@@ -5,6 +5,7 @@
         "php": "^8.5",
         "ext-curl": "*",
         "guzzlehttp/guzzle": "^7.10",
+        "guzzlehttp/psr7": "^2.11",
         "psr/log": "^3.0",
         "ext-ctype": "*"
     },

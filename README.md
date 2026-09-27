@@ -121,7 +121,7 @@ $getter->setUrls(['vehicles' => $api->getUrl('eu', 'wot', 'encyclopedia/vehicles
 ])]);
 $page = $getter->getEnvelopes()['vehicles'];
 $vehicles = $page['data'];
-$totalPages = $page['meta']['page_total'] ?? 1;
+$totalPages = $page['meta']['page_total'] ?? null; // absence does not mean one page
 ```
 
 getEnvelopes() returns each full validated envelope; getData() returns just data. Neither automatically follows pagination. Use a bounded page loop, or WgParser's ApiTankCatalog for the vehicle catalogue. Do not run multiple unrelated consumers against the same queued getter instance simultaneously.
@@ -142,3 +142,7 @@ $getter = new WgDataGetter(
 For multiple workers/packages using one application ID, supply a shared RateLimiterInterface implementation instead of one limiter per process. Endpoint and application quotas still govern actual throughput.
 
 This package performs GET only. Generic public WG methods can be supplied as URLs; it does not choose HTTP verbs or grant private access. WgAuth provides POST authentication and avoids access tokens in URLs.
+
+setUrls() accepts authenticated HTTPS GET requests, including encoded access_token parameter names. Token-bearing requests require HTTPS even for loopback URLs. Supply application-owned URLs; HTTPS validation is not a destination/IP allowlist for arbitrary user input. Injected Guzzle query defaults cannot replace the explicit request URL query, and transport debug output is disabled. Redact token-bearing URLs in application/proxy logs.
+
+The transport reads the complete response body without a package-defined byte limit or truncation. This also applies to gzip-decoded responses and responses without Content-Length. The directly used guzzlehttp/psr7 dependency (MIT) provides the stream-reading utilities.
