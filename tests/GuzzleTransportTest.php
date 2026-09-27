@@ -16,6 +16,28 @@ use PHPUnit\Framework\TestCase;
 
 final class GuzzleTransportTest extends TestCase
 {
+    public function testPoolBoundsActualOutstandingHttpPromises(): void
+    {
+        $active = $peak = $started = 0;
+        $handler = static function () use (&$active, &$peak, &$started): \GuzzleHttp\Promise\Promise {
+            ++$active;
+            ++$started;
+            $peak = max($peak, $active);
+            $promise = null;
+            $promise = new \GuzzleHttp\Promise\Promise(static function () use (&$promise, &$active): void {
+                --$active;
+                $promise->resolve(new Response(200, [], '{"status":"ok","data":[]}'));
+            });
+            return $promise;
+        };
+        $transport = new GuzzleTransport(new Client(['handler' => $handler]));
+        $results = $transport->send(array_fill(0, 13, 'https://example.test/'), 3);
+        self::assertCount(13, $results);
+        self::assertSame(13, $started);
+        self::assertSame(3, $peak);
+        self::assertSame(0, $active);
+    }
+
     public function testAsyncPoolPreservesKeysHttpErrorsAndSecureOptions(): void
     {
         $history = [];

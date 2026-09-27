@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased — planned 2.0.1
+## 2.1.0 — 2026-09-27
+
+- Add SettledDataGetterInterface and per-request RequestOutcome/RequestFailure objects for multiget with independent successes and failures.
+- Preserve successful envelopes and input queue order after terminal HTTP/provider errors or invalid JSON; retry only pending transient failures and record attempts.
+- Allow a per-call concurrency override with queue cleanup and restoration; verify actual outstanding Guzzle HTTP promises stay within concurrency.
+- Preserve the existing DataGetterInterface and fail-fast methods. Add multiget examples and partial-failure regressions.
 
 - Read complete GET response streams, including short reads, without a package-defined response-size limit; sanitize stream-read failures.
 - Preserve the URL's explicit query over injected Guzzle defaults and disable inherited transport debug output.

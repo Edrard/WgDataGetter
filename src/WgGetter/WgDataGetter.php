@@ -6,7 +6,8 @@ namespace edrard\WgGetter;
 
 use Closure;
 use edrard\WgGetter\Contracts\BatchTransportInterface;
-use edrard\WgGetter\Contracts\DataGetterInterface;
+use edrard\WgGetter\Contracts\SettledDataGetterInterface;
+use edrard\WgGetter\Exceptions\InvalidResponseException;
 use edrard\WgGetter\Contracts\RateLimiterInterface;
 use edrard\WgGetter\Exceptions\RequestException;
 use edrard\WgGetter\Http\GuzzleTransport;
@@ -16,7 +17,7 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use SensitiveParameter;
 
-class WgDataGetter implements DataGetterInterface
+class WgDataGetter implements SettledDataGetterInterface
 {
     /** @var array<int|string, string> */
     private array $urls = [];
@@ -121,6 +122,31 @@ class WgDataGetter implements DataGetterInterface
         return $this->execute(null, false, true);
     }
 
+    /** @return array<int|string, RequestOutcome> */
+    public function getEnvelopeOutcomes(?int $concurrency = null): array
+    {
+        if ($this->running) {
+            throw new LogicException('Recursive fetching is not supported.');
+        }
+        $previous = $this->multi;
+        if ($concurrency !== null) {
+            $this->setMultiVar($concurrency);
+        }
+        $this->running = true;
+        try {
+            $outcomes = [];
+            foreach (array_chunk($this->urls, $this->multi, true) as $urls) {
+                [, , $batch] = $this->fetchBatch($urls, true, true);
+                $outcomes += $batch;
+            }
+            return $outcomes;
+        } finally {
+            $this->cleanUrls();
+            $this->running = false;
+            $this->multi = $previous;
+        }
+    }
+
     /**
      * @return array<array-key, mixed>
      */
@@ -166,13 +192,13 @@ class WgDataGetter implements DataGetterInterface
     }
 
     /**
-     * @return array{array<array-key, mixed>, array<array-key, mixed>}
+     * @return array{array<array-key, mixed>, array<array-key, mixed>, array<int|string, RequestOutcome>}
      * @param array<int|string, string> $urls
      */
-    private function fetchBatch(#[SensitiveParameter] array $urls, bool $validateEnvelope): array
+    private function fetchBatch(#[SensitiveParameter] array $urls, bool $validateEnvelope, bool $settled = false): array
     {
         $pending = $urls;
-        $raw = $data = [];
+        $raw = $data = $outcomes = [];
         for ($attempt = 1; $pending !== []; ++$attempt) {
             $this->limiter->acquire(count($pending));
             $responses = $this->transport->send($pending, $this->multi);
@@ -187,10 +213,22 @@ class WgDataGetter implements DataGetterInterface
                     $value = $validateEnvelope ? $this->decoder->envelope($response->body, $key) : null;
                     $raw[$key] = $response->body;
                     $data[$key] = $value;
+                    if ($settled) {
+                        $outcomes[$key] = new RequestOutcome($value, null, $attempt);
+                    }
+                } catch (InvalidResponseException $error) {
+                    if (!$settled) {
+                        throw $error;
+                    }
+                    $outcomes[$key] = new RequestOutcome(null, new RequestFailure('invalid_response'), $attempt);
                 } catch (RequestException $error) {
                     if (!$error->retryable || $attempt >= $this->retry->maxAttempts || ($error->retryAfter !== null && $error->retryAfter > $this->retry->maxDelay)) {
                         $this->logger->error('API request failed.', ['code' => $error->getCode(), 'attempt' => $attempt]);
-                        throw $error;
+                        if (!$settled) {
+                            throw $error;
+                        }
+                        $outcomes[$key] = new RequestOutcome(null, new RequestFailure('request_failed', $error->getCode(), $error->retryable, $error->retryAfter), $attempt);
+                        continue;
                     }
                     $retryUrls[$key] = $url;
                     $delay = max($delay, $this->retry->delay($attempt, $error->retryAfter));
@@ -205,9 +243,17 @@ class WgDataGetter implements DataGetterInterface
         // Restore input order even when a later retry finished after other keys.
         $orderedRaw = $orderedData = [];
         foreach ($urls as $key => $_) {
-            $orderedRaw[$key] = $raw[$key];
-            $orderedData[$key] = $data[$key];
+            if (array_key_exists($key, $raw)) {
+                $orderedRaw[$key] = $raw[$key];
+                $orderedData[$key] = $data[$key];
+            }
         }
-        return [$orderedRaw, $orderedData];
+        $orderedOutcomes = [];
+        foreach ($urls as $key => $_) {
+            if (isset($outcomes[$key])) {
+                $orderedOutcomes[$key] = $outcomes[$key];
+            }
+        }
+        return [$orderedRaw, $orderedData, $orderedOutcomes];
     }
 }

@@ -1,5 +1,24 @@
 # WgDataGetter — PHP 8.5
 
+## Independent multiget outcomes
+
+```php
+$getter->setUrls(['profiles' => $profilesUrl, 'achievements' => $achievementsUrl]);
+$outcomes = $getter->getEnvelopeOutcomes(concurrency: 10);
+foreach ($outcomes as $name => $outcome) {
+    if ($outcome->succeeded()) {
+        $envelope = $outcome->envelope();
+    } else {
+        $failure = $outcome->failure; // kind, code, retryable, retryAfter
+        $attempts = $outcome->attempts;
+    }
+}
+```
+
+SettledDataGetterInterface adds independent outcomes without changing DataGetterInterface or legacy fail-fast methods. HTTP/provider errors and invalid envelopes become per-request failures; successes remain available. Only transient failed requests are retried under RetryPolicy. Caller keys/order are retained and the queue is consumed. The optional concurrency override (1–10) is restored afterwards. Infrastructure exceptions may still propagate. Failure objects contain safe categories/codes instead of URLs, bodies or provider messages; debug output redacts envelopes.
+
+The existing Guzzle Pool bounds actual concurrent HTTP requests and reads complete bodies without a package-defined size cap. WotClient uses this interface for typed operations and endpoint-limit chunks. WgDataGetter owns HTTP concurrency and retries.
+
 Concurrent GET fetcher with WG response validation and bounded retries. Requires PHP 8.5, ext-curl and Composer 2.
 
 ```sh
