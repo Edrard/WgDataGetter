@@ -41,27 +41,45 @@ $data = $getter->getData(); // request key => WG data, including null
 Guzzle 7 (MIT) provides an asynchronous request Pool. BatchTransportInterface supports alternative transports and test doubles. RateLimiterInterface supports application-wide quota coordination. An injected PSR-3 logger (MIT) receives diagnostics; the default is NullLogger.
 
 ```php
-use edrard\WgGetter\Http\GuzzleTransport;
 use edrard\WgGetter\RetryPolicy;
 
 $getter = new WgDataGetter(
-    transport: new GuzzleTransport(timeout: 15, connectTimeout: 5),
+    timeout: 120, connectTimeout: 40,
     multi: 5,
-    retry: new RetryPolicy(maxAttempts: 3, baseDelay: 0.5, maxDelay: 30),
+    retry: new RetryPolicy(maxAttempts: 3, baseDelay: 5, maxDelay: 30),
     logger: $logger,
 );
 ```
 
 The legacy edrard\\Curl\\Curl constructor dependency has been replaced by GuzzleTransport or an implementation of BatchTransportInterface.
 
+Getter-level timeout values configure the default GuzzleTransport. If you inject another transport, configure its own timeouts there. Individual URLs can override the getter defaults when they are queued:
+
+```php
+use edrard\WgGetter\Request;
+
+$getter->setUrls([
+    'normal' => $normalUrl,
+    'large' => new Request(
+        $largeUrl,
+        timeout: 180,
+        connectTimeout: 60,
+        retry: new RetryPolicy(maxAttempts: 4, baseDelay: 8, maxDelay: 60),
+    ),
+]);
+```
+
+The timeout is for the entire HTTP request, including connection setup; it does not cap response bytes. An omitted Request option inherits the getter default. Per-URL retry settings apply to getData(), getEnvelopes() and getEnvelopeOutcomes(). getEnvelopeOutcomesOnce() always makes exactly one attempt, even when a Request specifies more.
+
 ## Behavioral guarantees
 
-- multi is applied and must be between 1 and 10. Default timeouts are 15 seconds overall and 5 seconds to connect. TLS verification is enabled; redirects are disabled.
+- multi is applied and must be between 1 and 10. Default timeouts are 120 seconds overall and 40 seconds to connect; the connection time is included in the overall timeout. TLS verification is enabled; redirects are disabled.
 - The default limiter paces one instance at 10 requests/second, including retries. This is local pacing, not a distributed quota guarantee. Multiple workers must share a limiter configured for their application ID's actual quota.
 - Transport failures, HTTP 429/500/502/503/504, and WG REQUEST_LIMIT_EXCEEDED / SOURCE_NOT_AVAILABLE are retried. Successful request keys are never fetched again during a retry.
-- Three total attempts by default, with exponential delays and Retry-After. A Retry-After exceeding maxDelay is propagated without an early retry.
+- Three total attempts by default, with 5 and 10 seconds between attempts. Retry-After can lengthen those pauses. A Retry-After exceeding maxDelay is propagated without an early retry.
 - Invalid parameters/IDs, malformed JSON and unexpected envelopes fail immediately with exceptions.
 - getData() returns data blocks. getEnvelopes() preserves complete WG envelopes, including pagination meta.
+- getEnvelopes() throws if a queued request ultimately fails. getEnvelopeOutcomes() instead returns one success/failure object per URL with configured bounded retries; getEnvelopeOutcomesOnce() returns the same shape after exactly one attempt and no retry delay.
 - The queue is consumed on both success and failure. Exceptions do not return partial data; the application owns rescheduling.
 - Numeric URL keys append; string keys identify requests. Conflicting string keys are rejected atomically.
 - Remote URLs require HTTPS without userinfo or fragments. HTTP is allowed only for localhost tests. Supply trusted URLs, not arbitrary user input.
@@ -69,7 +87,7 @@ The legacy edrard\\Curl\\Curl constructor dependency has been replaced by Guzzle
 - A callback receives raw bodies and URLs once per successful batch. Normal mode requires same-key JSON strings, which are decoded again. getData($callback, true) returns the callback's own array and skips WG-envelope validation; result keys must be unique across batches.
 - debugLog() is a deprecated no-op. Configure log levels on the logger.
 
-Release: v2.0.0. Composer name: edrard/wggetter; stable constraint: ^2.0; development alias: 2.0.x-dev. Source: [Edrard/WgDataGetter](https://github.com/Edrard/WgDataGetter), Edrard, MIT. The new Laravel application has not adopted this package yet. Shared review: Docs/Reports/WG-LIBS-001_2026-09-26_review.md in the maintainer's workspace.
+Release: v2.4.0. Composer name: edrard/wggetter; stable constraint: ^2.4; development alias: 2.4.x-dev. Source: [Edrard/WgDataGetter](https://github.com/Edrard/WgDataGetter), Edrard, MIT. The new Laravel application has not adopted this package yet. Shared review: Docs/Reports/WG-LIBS-001_2026-09-26_review.md in the maintainer's workspace.
 
 References: [WG envelopes and errors](https://developers.wargaming.net/documentation/guide/getting-started/), [Guzzle concurrent requests](https://docs.guzzlephp.org/en/stable/quickstart.html#concurrent-requests).
 ## Complete public-data example
@@ -94,7 +112,7 @@ Install both packages through your application's root Composer configuration. Wg
     "require": {
         "php": "^8.5",
         "edrard/wgapi": "^2.0",
-        "edrard/wggetter": "^2.0"
+        "edrard/wggetter": "^2.4"
     }
 }
 ```

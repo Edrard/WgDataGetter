@@ -7,12 +7,33 @@ namespace edrard\Tests\WgDataGetter;
 use edrard\Tests\WgDataGetter\Fixtures\RecordingLimiter;
 use edrard\Tests\WgDataGetter\Fixtures\ScriptedTransport;
 use edrard\WgGetter\Http\HttpResult;
+use edrard\WgGetter\Request;
 use edrard\WgGetter\RetryPolicy;
 use edrard\WgGetter\WgDataGetter;
 use PHPUnit\Framework\TestCase;
 
 final class SettledMultigetTest extends TestCase
 {
+    public function testPerRequestRetryOverrideCannotChangeSingleAttemptContract(): void
+    {
+        $transport = new ScriptedTransport([
+            ['timeout' => new HttpResult(0, transportFailure: true)],
+            ['timeout' => new HttpResult(200, '{"status":"ok","data":null}')],
+        ]);
+        $sleeps = [];
+        $getter = new WgDataGetter($transport, limiter: new RecordingLimiter(), sleep: static function (float $seconds) use (&$sleeps): void {
+            $sleeps[] = $seconds;
+        });
+        $getter->setUrls(['timeout' => new Request('https://example.test/', retry: new RetryPolicy(5, 7, 60))]);
+
+        $outcome = $getter->getEnvelopeOutcomesOnce()['timeout'];
+
+        self::assertSame(1, $outcome->attempts);
+        self::assertSame(0, $outcome->failure->code);
+        self::assertCount(1, $transport->calls);
+        self::assertSame([], $sleeps);
+    }
+
     public function testDocumentedProviderIdentifierSurvivesWithoutRawErrorValue(): void
     {
         $transport = new ScriptedTransport([[

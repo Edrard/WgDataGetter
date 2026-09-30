@@ -8,7 +8,7 @@ use InvalidArgumentException;
 
 final readonly class RetryPolicy
 {
-    public function __construct(public int $maxAttempts = 3, public float $baseDelay = 0.5, public float $maxDelay = 30.0)
+    public function __construct(public int $maxAttempts = 3, public float $baseDelay = 5.0, public float $maxDelay = 30.0)
     {
         if ($maxAttempts < 1 || $baseDelay < 0 || $maxDelay < $baseDelay || !is_finite($baseDelay) || !is_finite($maxDelay)) {
             throw new InvalidArgumentException('Invalid retry policy.');

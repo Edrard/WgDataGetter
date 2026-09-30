@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace edrard\Tests\WgDataGetter;
 
 use edrard\WgGetter\Http\GuzzleTransport;
+use edrard\WgGetter\Request as GetterRequest;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
@@ -54,7 +55,26 @@ final class GuzzleTransportTest extends TestCase
             self::assertFalse($entry['options']['http_errors']);
             self::assertFalse($entry['options']['allow_redirects']);
             self::assertTrue($entry['options']['verify']);
-            self::assertSame(15.0, $entry['options']['timeout']);
+            self::assertSame(120.0, $entry['options']['timeout']);
+            self::assertSame(40.0, $entry['options']['connect_timeout']);
         }
+    }
+
+    public function testPerRequestTimeoutsOverrideTransportDefaults(): void
+    {
+        $history = [];
+        $stack = HandlerStack::create(new MockHandler([new Response(200), new Response(200)]));
+        $stack->push(Middleware::history($history));
+        $transport = new GuzzleTransport(new Client(['handler' => $stack]), timeout: 90, connectTimeout: 30);
+
+        $transport->send([
+            'custom' => new GetterRequest('https://example.test/custom', timeout: 180, connectTimeout: 60),
+            'default' => 'https://example.test/default',
+        ], 2);
+
+        self::assertSame(180.0, $history[0]['options']['timeout']);
+        self::assertSame(60.0, $history[0]['options']['connect_timeout']);
+        self::assertSame(90.0, $history[1]['options']['timeout']);
+        self::assertSame(30.0, $history[1]['options']['connect_timeout']);
     }
 }

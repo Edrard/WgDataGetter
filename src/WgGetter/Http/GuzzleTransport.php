@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace edrard\WgGetter\Http;
 
 use edrard\WgGetter\Contracts\BatchTransportInterface;
+use edrard\WgGetter\Request;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Pool;
@@ -17,7 +18,7 @@ use Throwable;
 final class GuzzleTransport implements BatchTransportInterface
 {
     private ClientInterface $client;
-    public function __construct(?ClientInterface $client = null, private float $timeout = 15.0, private float $connectTimeout = 5.0)
+    public function __construct(?ClientInterface $client = null, private float $timeout = 120.0, private float $connectTimeout = 40.0)
     {
         if (!is_finite($timeout) || !is_finite($connectTimeout) || $timeout <= 0 || $connectTimeout <= 0) {
             throw new InvalidArgumentException('HTTP timeouts must be finite and positive.');
@@ -25,7 +26,7 @@ final class GuzzleTransport implements BatchTransportInterface
         $this->client = $client ?? new Client();
     }
     /**
-     * @param array<int|string, string> $urls
+     * @param array<int|string, string|Request> $urls
      * @return array<int|string, HttpResult>
      */
     public function send(#[SensitiveParameter] array $urls, int $concurrency): array
@@ -35,12 +36,15 @@ final class GuzzleTransport implements BatchTransportInterface
         }
         $results = [];
         $requests = function () use ($urls): \Generator {
-            foreach ($urls as $key => $url) {
+            foreach ($urls as $key => $request) {
+                $url = $request instanceof Request ? $request->url() : $request;
+                $timeout = $request instanceof Request ? ($request->timeout ?? $this->timeout) : $this->timeout;
+                $connectTimeout = $request instanceof Request ? ($request->connectTimeout ?? $this->connectTimeout) : $this->connectTimeout;
                 yield $key => fn () => $this->client->requestAsync('GET', $url, [
                     'debug' => false,
                     'query' => parse_url($url, PHP_URL_QUERY) ?? '',
-                    'timeout' => $this->timeout,
-                    'connect_timeout' => $this->connectTimeout,
+                    'timeout' => $timeout,
+                    'connect_timeout' => $connectTimeout,
                     'http_errors' => false,
                     'allow_redirects' => false,
                     'verify' => true,

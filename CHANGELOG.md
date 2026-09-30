@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.0 - 2026-09-30
+
+- Set default connection/total timeouts to 40/120 seconds and default retry delays to 5/10 seconds across three attempts.
+- Allow timeout and retry policy configuration at getter construction and per GET through Request values in setUrls().
+- Keep getEnvelopeOutcomesOnce() strictly single-attempt even when a per-request retry policy is supplied. WG envelope interpretation is unchanged in this release.
+
 ## 2.2.0 - 2026-09-28
 
 - Add SingleAttemptDataGetterInterface/getEnvelopeOutcomesOnce for caller-owned recovery, with one attempt per queued URL and no retry cooldown.

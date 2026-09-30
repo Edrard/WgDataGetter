@@ -10,6 +10,7 @@ use edrard\WgGetter\Exceptions\InvalidResponseException;
 use edrard\WgGetter\Exceptions\RequestException;
 use edrard\WgGetter\Http\HttpResult;
 use edrard\WgGetter\IntervalRateLimiter;
+use edrard\WgGetter\Request;
 use edrard\WgGetter\RetryPolicy;
 use edrard\WgGetter\WgDataGetter;
 use InvalidArgumentException;
@@ -187,6 +188,35 @@ final class WgDataGetterTest extends TestCase
         self::assertSame(1.0, $policy->delay(2));
         self::assertSame(5.0, $policy->delay(1, 5));
         self::assertSame(10.0, $policy->delay(30));
+        self::assertSame(5.0, (new RetryPolicy())->delay(1));
+        self::assertSame(10.0, (new RetryPolicy())->delay(2));
+    }
+
+    public function testPerRequestRetryPolicyOverridesGetterDefaults(): void
+    {
+        $transport = new ScriptedTransport([
+            ['short' => new HttpResult(0, transportFailure: true), 'default' => new HttpResult(0, transportFailure: true)],
+            ['short' => new HttpResult(0, transportFailure: true), 'default' => new HttpResult(0, transportFailure: true)],
+            ['default' => self::ok(['recovered'])],
+        ]);
+        $waits = [];
+        $getter = new WgDataGetter($transport, retry: new RetryPolicy(), limiter: new RecordingLimiter(), sleep: static function (float $seconds) use (&$waits): void {
+            $waits[] = $seconds;
+        });
+        $getter->setUrls([
+            'short' => new Request('https://api.example/short', retry: new RetryPolicy(2, 7, 30)),
+            'default' => 'https://api.example/default',
+        ]);
+
+        $results = $getter->getEnvelopeOutcomes();
+
+        self::assertSame(2, $results['short']->attempts);
+        self::assertSame(0, $results['short']->failure->code);
+        self::assertSame(3, $results['default']->attempts);
+        self::assertSame(['recovered'], $results['default']->envelope()['data']);
+        self::assertSame([7.0, 10.0], $waits);
+        self::assertSame(['default'], array_keys($transport->calls[2][0]));
+        self::assertSame([], $getter->getEnvelopeOutcomes());
     }
     public static function invalidUrls(): array
     {
@@ -213,7 +243,7 @@ final class WgDataGetterTest extends TestCase
         });
         $getter->setUrls(['a' => 'https://api.example/a']);
         self::assertSame(['a' => []], $getter->getData());
-        self::assertSame([2.0], $waits);
+        self::assertSame([5.0], $waits);
     }
 
     public function testLongRetryAfterIsNotSilentlyShortened(): void

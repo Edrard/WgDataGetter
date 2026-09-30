@@ -19,7 +19,7 @@ use SensitiveParameter;
 
 class WgDataGetter implements SingleAttemptDataGetterInterface
 {
-    /** @var array<int|string, string> */
+    /** @var array<int|string, string|Request> */
     private array $urls = [];
     private int $multi;
     private BatchTransportInterface $transport;
@@ -30,10 +30,13 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
     private Closure $sleep;
     private bool $running = false;
 
-    public function __construct(?BatchTransportInterface $transport = null, int $multi = 10, ?RetryPolicy $retry = null, ?RateLimiterInterface $limiter = null, ?LoggerInterface $logger = null, ?callable $sleep = null)
+    public function __construct(?BatchTransportInterface $transport = null, int $multi = 10, ?RetryPolicy $retry = null, ?RateLimiterInterface $limiter = null, ?LoggerInterface $logger = null, ?callable $sleep = null, float $timeout = 120.0, float $connectTimeout = 40.0)
     {
+        if (!is_finite($timeout) || !is_finite($connectTimeout) || $timeout <= 0 || $connectTimeout <= 0) {
+            throw new InvalidArgumentException('HTTP timeouts must be finite and positive.');
+        }
         $this->setMultiVar($multi);
-        $this->transport = $transport ?? new GuzzleTransport();
+        $this->transport = $transport ?? new GuzzleTransport(timeout: $timeout, connectTimeout: $connectTimeout);
         $this->retry = $retry ?? new RetryPolicy();
         $this->limiter = $limiter ?? new IntervalRateLimiter();
         $this->decoder = new ResponseDecoder();
@@ -69,8 +72,12 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
             throw new LogicException('Cannot change the queue while fetching.');
         }
         $next = $this->urls;
-        foreach ($urls as $key => $url) {
-            $parts = is_string($url) ? parse_url($url) : false;
+        foreach ($urls as $key => $request) {
+            if (!is_string($request) && !$request instanceof Request) {
+                throw new InvalidArgumentException('Requests must be URL strings or Request instances.');
+            }
+            $url = $request instanceof Request ? $request->url() : $request;
+            $parts = parse_url($url);
             if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['http', 'https'], true) || empty($parts['host'])
                 || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])
                 || preg_match('/[\x00-\x20\x7f\\\\]/', $url)) {
@@ -89,11 +96,11 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
                 }
             }
             if (is_int($key)) {
-                $next[] = $url;
-            } elseif (array_key_exists($key, $next) && $next[$key] !== $url) {
+                $next[] = $request;
+            } elseif (array_key_exists($key, $next) && $next[$key] !== $request) {
                 throw new InvalidArgumentException('Duplicate request key with a different URL.');
             } else {
-                $next[$key] = $url;
+                $next[$key] = $request;
             }
         }
         $this->urls = $next;
@@ -125,7 +132,7 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
     /** @return array<int|string, RequestOutcome> */
     public function getEnvelopeOutcomes(?int $concurrency = null): array
     {
-        return $this->settled($concurrency, $this->retry->maxAttempts);
+        return $this->settled($concurrency, null);
     }
 
     /** @return array<int|string, RequestOutcome> */
@@ -135,7 +142,7 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
     }
 
     /** @return array<int|string, RequestOutcome> */
-    private function settled(?int $concurrency, int $maxAttempts): array
+    private function settled(?int $concurrency, ?int $maxAttempts): array
     {
         if ($this->running) {
             throw new LogicException('Recursive fetching is not supported.');
@@ -172,7 +179,8 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
             $end = [];
             foreach (array_chunk($this->urls, $this->multi, true) as $urls) {
                 [$raw, $data] = $this->fetchBatch($urls, !$instead);
-                $processed = $function === null ? $raw : $function($raw, $urls);
+                $callbackUrls = array_map(static fn (string|Request $request): string => $request instanceof Request ? $request->url() : $request, $urls);
+                $processed = $function === null ? $raw : $function($raw, $callbackUrls);
                 if (!is_array($processed)) {
                     throw new InvalidArgumentException('Response callback must return an array.');
                 }
@@ -205,7 +213,7 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
 
     /**
      * @return array{array<array-key, mixed>, array<array-key, mixed>, array<int|string, RequestOutcome>}
-     * @param array<int|string, string> $urls
+     * @param array<int|string, string|Request> $urls
      */
     private function fetchBatch(#[SensitiveParameter] array $urls, bool $validateEnvelope, bool $settled = false, ?int $maxAttempts = null): array
     {
@@ -216,7 +224,8 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
             $responses = $this->transport->send($pending, $this->multi);
             $retryUrls = [];
             $delay = 0.0;
-            foreach ($pending as $key => $url) {
+            foreach ($pending as $key => $request) {
+                $policy = $request instanceof Request ? ($request->retry ?? $this->retry) : $this->retry;
                 try {
                     $response = $responses[$key] ?? throw new RequestException($key, true);
                     if ($response->transportFailure || $response->status < 200 || $response->status >= 300) {
@@ -234,7 +243,7 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
                     }
                     $outcomes[$key] = new RequestOutcome(null, new RequestFailure('invalid_response'), $attempt);
                 } catch (RequestException $error) {
-                    if (!$error->retryable || $attempt >= ($maxAttempts ?? $this->retry->maxAttempts) || ($error->retryAfter !== null && $error->retryAfter > $this->retry->maxDelay)) {
+                    if (!$error->retryable || $attempt >= ($maxAttempts ?? $policy->maxAttempts) || ($error->retryAfter !== null && $error->retryAfter > $policy->maxDelay)) {
                         $this->logger->error('API request failed.', ['code' => $error->getCode(), 'attempt' => $attempt]);
                         if (!$settled) {
                             throw $error;
@@ -242,8 +251,8 @@ class WgDataGetter implements SingleAttemptDataGetterInterface
                         $outcomes[$key] = new RequestOutcome(null, new RequestFailure('request_failed', $error->getCode(), $error->retryable, $error->retryAfter, $error->providerMessage), $attempt);
                         continue;
                     }
-                    $retryUrls[$key] = $url;
-                    $delay = max($delay, $this->retry->delay($attempt, $error->retryAfter));
+                    $retryUrls[$key] = $request;
+                    $delay = max($delay, $policy->delay($attempt, $error->retryAfter));
                 }
             }
             if ($retryUrls !== []) {
