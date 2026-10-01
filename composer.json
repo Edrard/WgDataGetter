@@ -1,6 +1,6 @@
 {
     "name": "edrard/wggetter",
-    "description": "Concurrent Wargaming API fetcher with bounded retries for PHP 8.5",
+    "description": "Parallel raw HTTP GET fetcher with per-URL retries for PHP 8.5",
     "require": {
         "php": "^8.5",
         "ext-curl": "*",
@@ -42,7 +42,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-master": "2.4.x-dev"
+            "dev-master": "3.0.x-dev"
         }
     },
     "homepage": "https://github.com/Edrard/WgDataGetter",

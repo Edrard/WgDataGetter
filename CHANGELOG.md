@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased 3.0.0 — 2026-10-01
+
+- Execute all queued URLs together in one asynchronous wave and retry only transient failures in subsequent waves; remove internal request-rate and concurrency caps.
+- Return one raw FetchResult per URL from getData(), including HTTP error bodies and terminal transport failures. Never decode or validate WG JSON.
+- Remove redundant envelope/outcome modes and callback processing. This major version has not yet been tagged as a release.
+- Document atomic queue append and consumption in DataGetterInterface; verify duplicate rejection, explicit clearing and cleanup after infrastructure exceptions.
+
 ## 2.4.0 - 2026-09-30
 
 - Set default connection/total timeouts to 40/120 seconds and default retry delays to 5/10 seconds across three attempts.

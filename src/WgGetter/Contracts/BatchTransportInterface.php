@@ -12,5 +12,5 @@ interface BatchTransportInterface
      * @param array<int|string, string|\edrard\WgGetter\Request> $urls
      * @return array<int|string, HttpResult>
      */
-    public function send(array $urls, int $concurrency): array;
+    public function send(array $urls): array;
 }

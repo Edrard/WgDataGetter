@@ -1,63 +1,43 @@
-# WgDataGetter — PHP 8.5
+# WgDataGetter
 
-## Independent multiget outcomes
+PHP 8.5 HTTP GET transport. Supply ready URLs; `getData()` returns a `FetchResult` for **every URL**, including failed requests. It never parses or validates WG JSON, extracts `data`, merges responses, or applies provider quotas.
 
-```php
-$getter->setUrls(['profiles' => $profilesUrl, 'achievements' => $achievementsUrl]);
-$outcomes = $getter->getEnvelopeOutcomes(concurrency: 10);
-foreach ($outcomes as $name => $outcome) {
-    if ($outcome->succeeded()) {
-        $envelope = $outcome->envelope();
-    } else {
-        $failure = $outcome->failure; // kind, code, retryable, retryAfter, providerMessage
-        $attempts = $outcome->attempts;
-    }
-}
-```
-
-SettledDataGetterInterface adds independent outcomes without changing DataGetterInterface or legacy fail-fast methods. HTTP/provider errors and invalid envelopes become per-request failures; successes remain available. Only transient failed requests are retried under RetryPolicy. Caller keys/order are retained and the queue is consumed. The optional concurrency override (1–10) is restored afterwards. Infrastructure exceptions may still propagate. Failure objects contain safe categories/codes and allowlisted WG error identifiers (`INVALID_IP_ADDRESS`, `INVALID_APPLICATION_ID`, `APPLICATION_IS_BLOCKED`, `REQUEST_LIMIT_EXCEEDED`, `SOURCE_NOT_AVAILABLE`), never URLs, bodies, error values or arbitrary provider text; debug output redacts envelopes. An envelope with `status: "ok"` succeeds even when `data` is absent, null or unusual.
-
-The existing Guzzle Pool bounds actual concurrent HTTP requests and reads complete bodies without a package-defined size cap. WgDataGetter owns HTTP concurrency. Its existing settled methods can apply bounded retries; WotClient 1.2+ uses the single-attempt capability below so WgBatch controls recovery.
-
-Concurrent GET fetcher with WG response validation and bounded retries. Requires PHP 8.5, ext-curl and Composer 2.
-
-```sh
-composer install
-composer test
-composer analyse
-composer format:check
-```
+The next breaking release is **3.0.0 (unreleased worktree)**. Package name: `edrard/wggetter`; after publication, use `^3.0`.
 
 ```php
 use edrard\WgGetter\WgDataGetter;
 
-$getter = new WgDataGetter(multi: 5);
-$getter->setUrls($urls);
-$data = $getter->getData(); // request key => WG data, including null
+$getter = new WgDataGetter();
+$getter->setUrls([
+    'profile' => $profileUrl,
+    'tanks' => $tanksUrl,
+]);
+$results = $getter->getData();
+
+foreach ($results as $key => $result) {
+    // $result->body: complete unchanged HTTP body, or null for transport failure.
+    // $result->httpStatus: HTTP code, or null for a transport failure.
+    // $result->attempts: number of attempts for this URL.
+    // $result->transportFailure: true when no complete usable response was obtained.
+}
 ```
 
-## Dependencies and extension points
+One URL is one GET. More than one URL is submitted together as **one asynchronous multirequest**. By default, a timeout, network failure, or HTTP `429`, `500`, `502`, `503`, `504` receives up to three total attempts, with pauses of 5 and 10 seconds. Only failed URLs are sent again in the next wave. A successful URL is never repeated because another URL failed. Other HTTP statuses are returned after the first attempt. An HTTP 200 body containing WG `status: error` is returned unchanged. A malformed JSON body is also returned unchanged.
 
-Guzzle 7 (MIT) provides an asynchronous request Pool. BatchTransportInterface supports alternative transports and test doubles. RateLimiterInterface supports application-wide quota coordination. An injected PSR-3 logger (MIT) receives diagnostics; the default is NullLogger.
+There is no built-in request-per-second cap or maximum number of concurrent URLs. The caller controls the number of URLs passed in each call. This is separate from per-URL retry behavior. The queue is consumed after `getData()`, including if infrastructure code raises an exception.
 
-```php
-use edrard\WgGetter\RetryPolicy;
-
-$getter = new WgDataGetter(
-    timeout: 120, connectTimeout: 40,
-    multi: 5,
-    retry: new RetryPolicy(maxAttempts: 3, baseDelay: 5, maxDelay: 30),
-    logger: $logger,
-);
-```
-
-The legacy edrard\\Curl\\Curl constructor dependency has been replaced by GuzzleTransport or an implementation of BatchTransportInterface.
-
-Getter-level timeout values configure the default GuzzleTransport. If you inject another transport, configure its own timeouts there. Individual URLs can override the getter defaults when they are queued:
+Connection timeout defaults to 40 seconds; the full HTTP timeout defaults to 120 seconds. Neither limits response bytes. Configure timeouts and retry policy at construction or for an individual URL:
 
 ```php
 use edrard\WgGetter\Request;
+use edrard\WgGetter\RetryPolicy;
+use edrard\WgGetter\WgDataGetter;
 
+$getter = new WgDataGetter(
+    timeout: 120,
+    connectTimeout: 40,
+    retry: new RetryPolicy(maxAttempts: 3, baseDelay: 5, maxDelay: 30),
+);
 $getter->setUrls([
     'normal' => $normalUrl,
     'large' => new Request(
@@ -67,128 +47,57 @@ $getter->setUrls([
         retry: new RetryPolicy(maxAttempts: 4, baseDelay: 8, maxDelay: 60),
     ),
 ]);
+$results = $getter->getData();
 ```
 
-The timeout is for the entire HTTP request, including connection setup; it does not cap response bytes. An omitted Request option inherits the getter default. Per-URL retry settings apply to getData(), getEnvelopes() and getEnvelopeOutcomes(). getEnvelopeOutcomesOnce() always makes exactly one attempt, even when a Request specifies more.
+`FetchResult::succeeded()` means HTTP 2xx with an actual response; it makes **no claim about WG's `status` field**. HTTP error bodies are retained. For a transport failure, `body` and `httpStatus` are null. Request keys and input order are preserved. Invalid URL/configuration values raise exceptions before sending. Remote requests require HTTPS; TLS verification is on and redirects are disabled. URL, token and body values are redacted from the library's debug output; consumers must also avoid logging raw private values.
 
-## Behavioral guarantees
+MIT license. Source: [Edrard/WgDataGetter](https://github.com/Edrard/WgDataGetter). Development checks: `composer test`, `composer analyse`, `composer format:check`, `composer validate --strict` on PHP 8.5.
 
-- multi is applied and must be between 1 and 10. Default timeouts are 120 seconds overall and 40 seconds to connect; the connection time is included in the overall timeout. TLS verification is enabled; redirects are disabled.
-- The default limiter paces one instance at 10 requests/second, including retries. This is local pacing, not a distributed quota guarantee. Multiple workers must share a limiter configured for their application ID's actual quota.
-- Transport failures, HTTP 429/500/502/503/504, and WG REQUEST_LIMIT_EXCEEDED / SOURCE_NOT_AVAILABLE are retried. Successful request keys are never fetched again during a retry.
-- Three total attempts by default, with 5 and 10 seconds between attempts. Retry-After can lengthen those pauses. A Retry-After exceeding maxDelay is propagated without an early retry.
-- Invalid parameters/IDs, malformed JSON and unexpected envelopes fail immediately with exceptions.
-- getData() returns data blocks. getEnvelopes() preserves complete WG envelopes, including pagination meta.
-- getEnvelopes() throws if a queued request ultimately fails. getEnvelopeOutcomes() instead returns one success/failure object per URL with configured bounded retries; getEnvelopeOutcomesOnce() returns the same shape after exactly one attempt and no retry delay.
-- The queue is consumed on both success and failure. Exceptions do not return partial data; the application owns rescheduling.
-- Numeric URL keys append; string keys identify requests. Conflicting string keys are rejected atomically.
-- Remote URLs require HTTPS without userinfo or fragments. HTTP is allowed only for localhost tests. Supply trusted URLs, not arbitrary user input.
-- Library log messages and exception text omit URLs, tokens, request keys, provider messages and raw JSON. User callbacks/loggers are responsible for their own output.
-- A callback receives raw bodies and URLs once per successful batch. Normal mode requires same-key JSON strings, which are decoded again. getData($callback, true) returns the callback's own array and skips WG-envelope validation; result keys must be unique across batches.
-- debugLog() is a deprecated no-op. Configure log levels on the logger.
+## Public API and queue
 
-Release: v2.4.0. Composer name: edrard/wggetter; stable constraint: ^2.4; development alias: 2.4.x-dev. Source: [Edrard/WgDataGetter](https://github.com/Edrard/WgDataGetter), Edrard, MIT. The new Laravel application has not adopted this package yet. Shared review: Docs/Reports/WG-LIBS-001_2026-09-26_review.md in the maintainer's workspace.
+Load Composer's `vendor/autoload.php`. Runtime requirements are PHP `^8.5`, `ext-curl`, `ext-ctype`, Guzzle `^7.10`, PSR-7 implementation `^2.11` and PSR logger `^3.0`, as declared in `composer.json`.
 
-References: [WG envelopes and errors](https://developers.wargaming.net/documentation/guide/getting-started/), [Guzzle concurrent requests](https://docs.guzzlephp.org/en/stable/quickstart.html#concurrent-requests).
-## Complete public-data example
+Classes use namespace `edrard\WgGetter`; interfaces use `edrard\WgGetter\Contracts`.
 
-```sh
-php examples/public-data.php
-# Configure WG_APPLICATION_ID or provide the application ID on stdin.
-```
+| Operation | Contract |
+| --- | --- |
+| `WgDataGetter::__construct(?BatchTransportInterface $transport = null, ?RetryPolicy $retry = null, ?LoggerInterface $logger = null, ?callable $sleep = null, float $timeout = 120.0, float $connectTimeout = 40.0)` | Uses default Guzzle transport, retry policy, null logger and real sleep when omitted. Injected transport controls its own timeouts. |
+| `DataGetterInterface::setUrls(array $urls): void` | Appends keyed URL strings or `Request` objects to the queue; preserves keys and insertion order. Duplicate keys, including numeric keys from repeated calls, are rejected. Invalid additions leave the existing queue unchanged. |
+| `DataGetterInterface::cleanUrls(): void` | Discards the pending queue. |
+| `DataGetterInterface::getData(): array` | Consumes the queue, returning `array<int|string, FetchResult>`. An empty queue returns `[]`. |
+| `Request::__construct(string $url, ?float $timeout = null, ?float $connectTimeout = null, ?RetryPolicy $retry = null)` | Immutable per-URL settings. Null settings inherit defaults; URL validation occurs in `setUrls()`. |
+| `Request::url(): string` | Returns the original URL. |
+| `RetryPolicy::__construct(int $maxAttempts = 3, float $baseDelay = 5.0, float $maxDelay = 30.0)` | Immutable policy; attempts include the first request. |
+| `RetryPolicy::delay(int $attempt, ?float $retryAfter = null): float` | Delay after a failed attempt, capped at `maxDelay`. |
+| `FetchResult::__construct(Http\HttpResult $response, int $attempts)` | Immutable final result, normally constructed by Getter. |
+| `FetchResult::succeeded(): bool` | True for HTTP 2xx without transport failure. |
 
-This explicitly makes one live read-only WoT request, preserving pagination/metadata and printing no application ID or account records. Unit tests do not use a live key.
+The queue cannot be changed while `getData()` is running; recursive fetching also throws `LogicException`. Transport, logger or custom sleep exceptions propagate to the caller, and the queue is still cleared. Timeout and retry configuration errors raise `InvalidArgumentException`: timeouts must be finite and positive; attempts at least 1; delays finite and non-negative, with `maxDelay >= baseDelay`.
 
-### Compose with WgApi in a consuming application
+Retry delay is `min(maxDelay, baseDelay * 2^(attempt-1))`, with exponent capped at 30. A wave waits for the largest configured delay among its pending retries. `Retry-After` is exposed on the final result but **Getter does not use it to schedule retries**. Although `delay()` accepts a header-derived argument for independent use, Getter calls it without that argument.
 
-Install both packages through your application's root Composer configuration. WgApi is intentionally not a dependency of this standalone URL fetcher. Until packages are registered on Packagist, declare both GitHub repositories explicitly:
+## Result examples
 
-```json
-{
-    "repositories": [
-        { "type": "vcs", "url": "https://github.com/Edrard/WgApi.git" },
-        { "type": "vcs", "url": "https://github.com/Edrard/WgDataGetter.git" }
-    ],
-    "require": {
-        "php": "^8.5",
-        "edrard/wgapi": "^2.0",
-        "edrard/wggetter": "^2.4"
-    }
-}
-```
+`body` is a string, not a decoded array. These illustrative values show the public fields returned for one key:
 
-```php
-require __DIR__.'/vendor/autoload.php';
+| Field | Successful HTTP response | Final HTTP error | Final transport failure |
+| --- | --- | --- | --- |
+| `httpStatus` | `200` | `504` | `null` |
+| `body` | `' {"status":"ok","data":{"1":null}} '` | Original error body, e.g. `'Gateway Timeout'` | `null` |
+| `transportFailure` | `false` | `false` | `true` |
+| `attempts` | `1` | `3` with default retry policy | `3` with default retry policy |
+| `retryAfter` | `null` or parsed header seconds | `null` or parsed header seconds | Normally `null` |
+| `succeeded()` | `true` | `false` | `false` |
 
-use edrard\WgApi\GetWgApi;
-use edrard\WgGetter\Exceptions\RequestException;
-use edrard\WgGetter\WgDataGetter;
+Transport failure also covers an unreadable response body. The transport does not retain the underlying exception, so the result cannot distinguish DNS failure, connection timeout and body-read failure. Debug output redacts bodies and URLs; reading the public `body` property still returns the original contents.
 
-$id = getenv('WG_APPLICATION_ID') ?: throw new LogicException('Configure WG_APPLICATION_ID.');
-$api = new GetWgApi(['eu' => $id]);
-$api->changeUrlPrefix('stats_');
-$getter = new WgDataGetter(multi: 5);
-$getter->setUrls($api->getPlayerStat('eu', [500000001, 500000002], [], [
-    'fields' => 'account_id,statistics.all',
-]));
-try {
-    $batches = $getter->getData();
-    foreach ($batches as $accounts) {
-        foreach ($accounts as $accountId => $account) {
-            if ($account === null) {
-                continue; // WG may return null for a missing account.
-            }
-            // Pass $account to your application; do not dump player records.
-        }
-    }
-} catch (RequestException $exception) {
-    // Failure is explicit; the queue has already been consumed.
-    // Reschedule deliberately using the saved input if your application needs it.
-    $code = $exception->getCode();
-    $retryable = $exception->retryable;
-    $retryAfter = $exception->retryAfter;
-}
-```
+## Transport extension point
 
-### Pagination envelopes
+`Contracts\BatchTransportInterface::send(array $urls): array` accepts keyed URL strings or `Request` objects and returns keyed `Http\HttpResult` objects. `HttpResult::__construct(int $status, string $body = '', ?float $retryAfter = null, bool $transportFailure = false)` exposes those four immutable public properties. An omitted result key is treated by Getter as a transport failure and follows the normal retry policy.
 
-```php
-$getter->setUrls(['vehicles' => $api->getUrl('eu', 'wot', 'encyclopedia/vehicles', [
-    'page_no' => 1, 'limit' => 100, 'fields' => 'tank_id',
-])]);
-$page = $getter->getEnvelopes()['vehicles'];
-$vehicles = $page['data'];
-$totalPages = $page['meta']['page_total'] ?? null; // absence does not mean one page
-```
+The default `Http\GuzzleTransport::__construct(?GuzzleHttp\ClientInterface $client = null, float $timeout = 120.0, float $connectTimeout = 40.0)` implements `send()`. It submits all supplied URLs using a Guzzle pool; actual parallel I/O depends on the configured Guzzle handler. Request options enforce TLS verification, disabled redirects and disabled HTTP-status exceptions. Plain HTTP is accepted only for `localhost`, `127.0.0.1` and `[::1]` testing; access-token requests always require HTTPS. No response-size cap is imposed.
 
-getEnvelopes() returns each full validated envelope; getData() returns just data. Neither automatically follows pagination. Use a bounded page loop, or WgParser's ApiTankCatalog for the vehicle catalogue. Do not run multiple unrelated consumers against the same queued getter instance simultaneously.
+After publication, install with `composer require edrard/wggetter:^3.0`. For this unpublished checkout, use a root Composer path repository with version `3.0.x-dev` and requirement `^3.0@dev`; see the [three-package local setup](../WotClient/README.md#installation).
 
-### Transport and quota injection
-
-```php
-use edrard\WgGetter\IntervalRateLimiter;
-use edrard\WgGetter\RetryPolicy;
-
-$getter = new WgDataGetter(
-    multi: 3,
-    retry: new RetryPolicy(maxAttempts: 2, baseDelay: 1, maxDelay: 10),
-    limiter: new IntervalRateLimiter(requestsPerSecond: 5),
-);
-```
-
-For multiple workers/packages using one application ID, supply a shared RateLimiterInterface implementation instead of one limiter per process. Endpoint and application quotas still govern actual throughput.
-
-This package performs GET only. Generic public WG methods can be supplied as URLs; it does not choose HTTP verbs or grant private access. WgAuth provides POST authentication and avoids access tokens in URLs.
-
-setUrls() accepts authenticated HTTPS GET requests, including encoded access_token parameter names. Token-bearing requests require HTTPS even for loopback URLs. Supply application-owned URLs; HTTPS validation is not a destination/IP allowlist for arbitrary user input. Injected Guzzle query defaults cannot replace the explicit request URL query, and transport debug output is disabled. Redact token-bearing URLs in application/proxy logs.
-
-The transport reads the complete response body without a package-defined byte limit or truncation. This also applies to gzip-decoded responses and responses without Content-Length. The directly used guzzlehttp/psr7 dependency (MIT) provides the stream-reading utilities.
-
-## Caller-owned recovery (SDK 2.2.0)
-
-```php
-$getter->setUrls($urls);
-$outcomes = $getter->getEnvelopeOutcomesOnce(concurrency: 10);
-```
-
-SingleAttemptDataGetterInterface executes each URL once, including 429 and 504. It reports every failure and Retry-After without sleeping or retrying. Transport concurrency and the configured request-rate limiter still apply. WotClient multiget uses this capability; WgBatch owns recovery, K and the caller-configured pause T. Existing getEnvelopeOutcomes/getData/getEnvelopes retain their RetryPolicy.
+`php examples/public-data.php` performs one public WG request using `WG_APPLICATION_ID` from the environment and prints HTTP status, attempts and response byte count. It uses normal default timeouts and retries. Files in the older singular `example/` directory use obsolete interfaces and are not compatible with 3.x.

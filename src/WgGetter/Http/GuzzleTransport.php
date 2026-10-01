@@ -18,6 +18,12 @@ use Throwable;
 final class GuzzleTransport implements BatchTransportInterface
 {
     private ClientInterface $client;
+
+    /** @return array<string, string|float> */
+    public function __debugInfo(): array
+    {
+        return ['client' => '[redacted]', 'timeout' => $this->timeout, 'connectTimeout' => $this->connectTimeout];
+    }
     public function __construct(?ClientInterface $client = null, private float $timeout = 120.0, private float $connectTimeout = 40.0)
     {
         if (!is_finite($timeout) || !is_finite($connectTimeout) || $timeout <= 0 || $connectTimeout <= 0) {
@@ -29,10 +35,10 @@ final class GuzzleTransport implements BatchTransportInterface
      * @param array<int|string, string|Request> $urls
      * @return array<int|string, HttpResult>
      */
-    public function send(#[SensitiveParameter] array $urls, int $concurrency): array
+    public function send(#[SensitiveParameter] array $urls): array
     {
-        if ($concurrency < 1) {
-            throw new InvalidArgumentException('Concurrency must be positive.');
+        if ($urls === []) {
+            return [];
         }
         $results = [];
         $requests = function () use ($urls): \Generator {
@@ -53,7 +59,7 @@ final class GuzzleTransport implements BatchTransportInterface
             }
         };
         $pool = new Pool($this->client, $requests(), [
-            'concurrency' => $concurrency,
+            'concurrency' => count($urls),
             'fulfilled' => function (ResponseInterface $response, int|string $key) use (&$results): void {
                 try {
                     $stream = $response->getBody();
